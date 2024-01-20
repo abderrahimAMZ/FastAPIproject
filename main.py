@@ -1,10 +1,22 @@
+import zipfile
+from typing import Annotated, Any
 
-from typing import Annotated
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException
+from fastapi.responses import JSONResponse
+import shutil
+import os
 
-from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 app = FastAPI()
+
+# models
+
+class UserInfo(BaseModel):
+    name : str
+    email : str
+    message : str
 
 # what to add to origins so that all requests from localhost are allowed on all ports?
 # https://stackoverflow.com/questions/63354853/how-to-allow-all-origins-in-fastapi
@@ -31,9 +43,7 @@ app.add_middleware(
 
 # let's write the endpoint to receive the file.
 
-@app.post("/files/")
-async def create_file(file: bytes = File(...)):
-    return {"file_size": len(file)}
+
 
 
 """
@@ -59,3 +69,46 @@ async def root(idk):
 @app.get("/hello/{name}")
 async def say_hello(name: str):
     return {"message": f"Hello {name}"}
+
+
+"""
+@app.post("/files")
+async def save_user_info(user_info: UserInfo, file: UploadFile):
+    temp_dir = "~/temp"
+    os.mkdir(temp_dir, exists_ok=True)
+
+    try:
+        user_info_path = os.path.join(temp_dir, "user_info.json")
+        with open(user_info_path, "w") as f:
+            f.write(user_info.json())
+
+        with zipfile.ZipFile(file.file, "r") as zip_ref:
+            zip_ref.extractall(temp_dir)
+
+        return {"message": "User info and file saved successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        shutil.rmtree(temp_dir)
+
+"""
+
+@app.post("/user")
+async def save_user_info(user_info: UserInfo, file : UploadFile):
+    return {"message": "User info saved successfully" f"{user_info}, {file.filename}"}
+
+
+@app.post("/files/")
+async def create_file(
+
+        file : UploadFile,
+         name: str = Form(...),
+        email: str = Form(...),
+        message: str = Form(...)):
+
+    file_location = f"saved_files/{file.filename}"
+
+    with open(file_location, "wb+") as file_object:
+        file_object.write(file.file.read())
+
+    return {"info": "file successfully saved, for user info, see below", "user_info": f"{name}, {email}, {message}"}

@@ -13,4 +13,9 @@ Accept: application/json
 # do i need to add the file endpoint here?
 
 GET http://127.0.0.1:8000/files/
-Accept: application/json
+Accept: multipart/form-data
+
+
+GET http://127.0.0.1:8000/user/
+Accept: multipart/form-data
+
