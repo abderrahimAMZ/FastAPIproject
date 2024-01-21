@@ -38,22 +38,6 @@ app.add_middleware(
 )
 
 
-# i have a client that is sending me a file in a POST request, and i want to store the file in my server.
-# i want to use the File() type, but i also want to know the file size.
-
-# let's write the endpoint to receive the file.
-
-
-
-
-"""
-
-@app.post("/files/")
-async def create_file(file: Annotated[bytes, File()]):
-    return {"file_size": len(file)}
-
-"""
-
 @app.post("/uploadfile/")
 async def create_upload_file(file: UploadFile):
     return {"filename": file.filename}
@@ -71,31 +55,6 @@ async def say_hello(name: str):
     return {"message": f"Hello {name}"}
 
 
-"""
-@app.post("/files")
-async def save_user_info(user_info: UserInfo, file: UploadFile):
-    temp_dir = "~/temp"
-    os.mkdir(temp_dir, exists_ok=True)
-
-    try:
-        user_info_path = os.path.join(temp_dir, "user_info.json")
-        with open(user_info_path, "w") as f:
-            f.write(user_info.json())
-
-        with zipfile.ZipFile(file.file, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
-
-        return {"message": "User info and file saved successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        shutil.rmtree(temp_dir)
-
-"""
-
-@app.post("/user")
-async def save_user_info(user_info: UserInfo, file : UploadFile):
-    return {"message": "User info saved successfully" f"{user_info}, {file.filename}"}
 
 
 @app.post("/files/")
