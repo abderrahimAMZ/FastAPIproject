@@ -15,6 +15,7 @@ from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 
+from gridfs import GridFS
 
 
 # to get a string like this run:
@@ -53,11 +54,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 app = FastAPI()
 
 
-origins = [
-    "http://localhost:5173",
-    "http://localhost:49684",
-    "http://localhost:43314",
-]
+origins = ["*"]
 
 # Set all CORS enabled origins
 app.add_middleware(
@@ -73,7 +70,7 @@ app.add_middleware(
 client = MongoClient('mongodb://localhost:27017/')
 db = client['users']
 users_collection = db['users']
-files_collection = db['files']
+fs = GridFS(db)
 
 
 def verify_password(plain_password, hashed_password):
@@ -85,7 +82,7 @@ def get_password_hash(password):
 
 
 def get_user(username: str):
-    user = users_collection.find_one({"username": username})
+    user = users_collection.find_one({"email": username})
     if user:
         username = user["username"]
         email = user["email"]
@@ -169,10 +166,10 @@ async def read_users_me(
 
 
 @app.post("/users/create/")
-async def create_user(user: User, password: str):
+async def create_user(username: Annotated[str, Form()], email : Annotated[EmailStr, Form()],password: Annotated[str, Form()]):
     # Convert the user data to a dictionary so it can be stored in MongoDB
 
-    existing_user = users_collection.find_one({"username": user.username})
+    existing_user = users_collection.find_one({"username": username})
 
     if existing_user:
         raise HTTPException(status_code=400, detail="Username already registered")
@@ -180,7 +177,9 @@ async def create_user(user: User, password: str):
 
     hashed_password = get_password_hash(password)
 
-    user_data = user.dict()
+    user_data = {}
+    user_data["username"] = username
+    user_data["email"] = email
     user_data["hashed_password"] = hashed_password
     user_data["files"] = []
 
@@ -195,51 +194,23 @@ async def create_user(user: User, password: str):
 # Access the 'files' collection
 
 @app.post("/fileUpload/")
-async def create_file(
+async def upload_file(
 
         file : UploadFile,
         User : Annotated[User, Depends(get_current_user)]):
 
-        file_location = f"saved_files/{file.filename}"
-        with open(file_location, "wb+") as file_object:
-            file_object.write(file.file.read())
+        user = users_collection.find_one({"username": User.username})
+        if user:
+            contents = await file.read()
+
+            file_id = fs.put(contents, filename=file.filename, content_type=file.content_type, user_id=user["_id"])
+
+            users_collection.update_one({"_id": user["_id"]}, {"$push": {"files": file_id}})
+
+            return {"message": "File stored successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="User not found")
 
         return {"message": "File created successfully" f"{User.username} {User.email}"}
-
-
-
-
-
-@app.post("/files/")
-async def create_file(
-
-        file : UploadFile,
-        User : Annotated[User, Depends(get_current_user)]):
-
-    user = users_collection.find_one({"username": User.username})
-    if user:
-        file_data = {}
-
-        file_content = file.file.read()
-        file_content_type = file.content_type
-        file_size = len(file_content)
-        file_name = file.filename
-
-        file_data["user_id"] = user["_id"]
-        file_data["file_name"] = file_name
-        file_data["file_content_type"] = file_content_type
-        file_data["file_size"] = file_size
-        file_data["file_content"] = file_content
-
-
-        result = files_collection.insert_one(file_data)
-        file_id = str(result.inserted_id)
-
-        users_collection.update_one({"_id": user["_id"]}, {"$push": {"files": file_id}})
-
-        return {"message": "File stored successfully"}
-    else:
-        raise HTTPException(status_code=404, detail="User not found")
-
 
 
