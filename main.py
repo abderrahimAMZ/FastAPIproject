@@ -38,8 +38,8 @@ class TokenData(BaseModel):
 
 
 class User(BaseModel):
-    username: str
-    email: str | None = None
+    username: Annotated[str, Form(...)]
+    email: Annotated[str, Form(...)]
 
 
 
@@ -121,6 +121,7 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
+        print(username)
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
@@ -147,7 +148,7 @@ async def login_for_access_token(
         )
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+        data={"sub": user.email}, expires_delta=access_token_expires
     )
     return Token(access_token=access_token, token_type="bearer")
 
@@ -166,7 +167,7 @@ async def read_users_me(
 
 
 @app.post("/users/create/")
-async def create_user(username: Annotated[str, Form()], email : Annotated[EmailStr, Form()],password: Annotated[str, Form()]):
+async def create_user(username : Annotated[str,Form()], email: Annotated[EmailStr,Form()], password: Annotated[str, Form()]):
     # Convert the user data to a dictionary so it can be stored in MongoDB
 
     existing_user = users_collection.find_one({"username": username})
