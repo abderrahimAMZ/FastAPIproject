@@ -202,7 +202,10 @@ async def upload_file(
 
         user = users_collection.find_one({"username": User.username})
         if user:
+            print(file.content_type)
             contents = await file.read()
+            if file.content_type != "application/x-zip-compressed":
+                raise HTTPException(400, detail="Invalid document type, please upload a zip file.")
 
             file_id = fs.put(contents, filename=file.filename, content_type=file.content_type, user_id=user["_id"])
 
@@ -212,6 +215,6 @@ async def upload_file(
         else:
             raise HTTPException(status_code=404, detail="User not found")
 
-        return {"message": "File created successfully" f"{User.username} {User.email}"}
+        return {"message": "File created successfully"}
 
 
