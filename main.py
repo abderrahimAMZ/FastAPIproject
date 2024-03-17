@@ -10,6 +10,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, EmailStr
 
 from passlib.context import CryptContext
@@ -17,14 +18,20 @@ from jose import JWTError, jwt
 
 from gridfs import GridFS
 
+import traceback, os, json, sendgrid
+
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail, Email, To, Content
+from datetime import datetime
 
 # to get a string like this run:
 # openssl rand -hex 32
 SECRET_KEY = "1aef19e98d5b41916153eb8d9ad98cce8a54037646bfe5c5080bfdc81388946d"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 1440*30
 
 
+api_key = "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"
 
 
 
@@ -40,6 +47,7 @@ class TokenData(BaseModel):
 class User(BaseModel):
     username: Annotated[str, Form(...)]
     email: Annotated[str, Form(...)]
+    verified: bool = False
 
 
 
@@ -73,6 +81,22 @@ users_collection = db['users']
 fs = GridFS(db)
 
 
+def send_verification_email(email, username):
+    token = create_access_token(data={"sub": username})
+    message = Mail(
+        from_email=('unk1911@edeliverables.com','eDeliverables Automation'),
+        to_emails=email,
+        subject='Verify your email',
+        html_content=f'<a href="http://localhost:8000/verify/{token}">Click here to verify your email</a>')
+    try:
+        sg = SendGridAPIClient(api_key=api_key)
+        response = sg.send(message)
+        print(response.status_code)
+        print(response.body)
+        print(response.headers)
+    except Exception as e:
+        print(e)
+
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
@@ -82,13 +106,14 @@ def get_password_hash(password):
 
 
 def get_user(username: str):
-    user = users_collection.find_one({"email": username})
+    user = users_collection.find_one({"$or": [{"email": username}, {"username": username}]})
     if user:
         username = user["username"]
         email = user["email"]
         hashed_password = user["hashed_password"]
+        verified = user["verified"]
 
-        return UserInDB(username=username, email=email, hashed_password=hashed_password)
+        return UserInDB(username=username, email=email, hashed_password=hashed_password, verified=verified)
     return None
 
 
@@ -132,7 +157,12 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         raise credentials_exception
     return user
 
-
+async def get_current_verified_user(
+    current_user: Annotated[User, Depends(get_current_user)]
+):
+    if current_user.verified == False:
+        raise HTTPException(status_code=400, detail="Email not verified. Please verify your email to continue.")
+    return current_user
 
 
 @app.post("/token")
@@ -183,11 +213,12 @@ async def create_user(username : Annotated[str,Form()], email: Annotated[EmailSt
     user_data["email"] = email
     user_data["hashed_password"] = hashed_password
     user_data["files"] = []
+    user_data["verified"] = False
 
 
     # Insert the user data into the 'users' collection
     result = users_collection.insert_one(user_data)
-
+    send_verification_email(email, username)
     # Return a success message
     return {"message": "User created successfully"}
 
@@ -197,8 +228,8 @@ async def create_user(username : Annotated[str,Form()], email: Annotated[EmailSt
 @app.post("/fileUpload/")
 async def upload_file(
 
-        file : UploadFile,
-        User : Annotated[User, Depends(get_current_user)]):
+        file: UploadFile,
+        User: Annotated[User, Depends(get_current_verified_user)]):
 
         user = users_collection.find_one({"username": User.username})
         if user:
@@ -215,6 +246,40 @@ async def upload_file(
         else:
             raise HTTPException(status_code=404, detail="User not found")
 
-        return {"message": "File created successfully"}
 
 
+@app.get("/verify/{token}", response_class=HTMLResponse)
+async def verify_email(token: str):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise HTTPException(status_code=400, detail="Invalid token")
+        user = users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        users_collection.update_one({"$or": [{"username": username}, {"email": username}]}, {"$set": {"verified": True}})
+        return """
+        <html>
+            <body>
+                <h1><span style="color:green;">&#10004;</span> Email verified successfully</h1>
+                <p>You can close this tab.</p>
+            </body>
+        </html>
+        """
+    except JWTError:
+        return """
+        <html>
+            <body>
+                <h1 style="color:red;">Verification failed</h1>
+                <p>The verification token is invalid.</p>
+            </body>
+        </html>
+        """
+@app.post("/users/resend/")
+async def resend_verification(username: Annotated[str, Form()]):
+    user = users_collection.find_one({"$or": [{"username": username}, {"email": username}]})
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    send_verification_email(user["email"], username)
+    return {"message": "Verification email resent successfully"}
