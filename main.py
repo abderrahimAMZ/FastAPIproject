@@ -6,6 +6,8 @@ from pymongo import MongoClient
 
 from fastapi import FastAPI, UploadFile, Form, HTTPException, Depends, status
 
+from fastapi import BackgroundTasks
+
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,6 +25,9 @@ import traceback, os, json, sendgrid
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email, To, Content
 from datetime import datetime
+
+import random
+import string
 
 # to get a string like this run:
 # openssl rand -hex 32
@@ -283,3 +288,107 @@ async def resend_verification(username: Annotated[str, Form()]):
         raise HTTPException(status_code=404, detail="User not found")
     send_verification_email(user["email"], username)
     return {"message": "Verification email resent successfully"}
+
+
+
+class PasswordReset(BaseModel):
+    email: str
+"""
+
+class PasswordResetPayload(BaseModel):
+    password: str
+    token: str
+
+@app.post("/password-reset/request")
+async def request_password_reset(password_reset: PasswordReset, background_tasks: BackgroundTasks):
+    user = get_user(password_reset.email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    password_reset_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(hours=1))
+
+    message = Mail(
+        from_email=('unk1911@edeliverables.com','eDeliverables Automation'),
+        to_emails=password_reset.email,
+        subject='Password Reset Request',
+        html_content=f'<p>To reset your password, click on the link below:</p><a href="http://localhost:8000/password-reset/{password_reset_token}">Reset Password</a>'
+    )
+
+    try:
+        sg = SendGridAPIClient(api_key)
+        response = sg.send(message)
+        print(response.status_code)
+        print(response.body)
+        print(response.headers)
+    except Exception as e:
+        print(e)
+
+    return {"message": "Password reset email sent"}
+
+
+@app.post("/password-reset/{token}")
+async def reset_password(token: str, password_reset_payload: PasswordResetPayload):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(status_code=400, detail="Invalid token")
+        user = get_user(email)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        hashed_password = get_password_hash(password_reset_payload.password)
+        users_collection.update_one({"email": email}, {"$set": {"hashed_password": hashed_password}})
+
+        return {"message": "Password reset successfully"}
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid token")
+        """
+
+
+def generate_verification_code(length=6):
+    return ''.join(random.choice(string.digits) for _ in range(length))
+
+@app.post("/password-reset/request")
+async def request_password_reset(email: Annotated[EmailStr, Form(...)]):
+    user = get_user(email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    verification_code = generate_verification_code()
+
+    # Store the verification code in the database
+    users_collection.update_one({"email": user.email}, {"$set": {"password_reset_code": verification_code}})
+
+    message = Mail(
+        from_email=('unk1911@edeliverables.com','eDeliverables Automation'),
+        to_emails=email,
+        subject='Password Reset Request',
+        html_content=f'<p>Your password reset code is: {verification_code}</p>'
+    )
+
+    try:
+        sg = SendGridAPIClient(api_key)
+        response = sg.send(message)
+        print(response.status_code)
+        print(response.body)
+        print(response.headers)
+    except Exception as e:
+        print(e)
+
+    return {"message": "Password reset email sent"}
+
+class PasswordResetPayload(BaseModel):
+    password: str
+    code: str
+
+@app.post("/password-reset")
+async def reset_password(password: Annotated[str, Form(...)], code: Annotated[str,Form(...)]):
+    user = users_collection.find_one({"password_reset_code": code})
+    if user is None:
+        raise HTTPException(status_code=404, detail="Invalid code")
+
+    hashed_password = get_password_hash(password)
+    users_collection.update_one({"email": user["email"]}, {"$set": {"hashed_password": hashed_password, "password_reset_code": None}})
+
+    return {"message": "Password reset successfully"}
