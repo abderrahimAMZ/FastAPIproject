@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta, timezone
 
 from typing import Annotated, List
@@ -6,7 +7,7 @@ from pymongo import MongoClient
 
 from fastapi import FastAPI, UploadFile, Form, HTTPException, Depends, status
 
-from fastapi import BackgroundTasks
+from bson.objectid import ObjectId
 
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
@@ -14,6 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, EmailStr
+
+
+
+from fastapi_jwt_auth import AuthJWT
 
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -29,16 +34,22 @@ from datetime import datetime
 import random
 import string
 
+
 # to get a string like this run:
 # openssl rand -hex 32
 SECRET_KEY = "1aef19e98d5b41916153eb8d9ad98cce8a54037646bfe5c5080bfdc81388946d"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 1440*30
-
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+REFRECH_TOKEN_EXPI = 60*24*30
 
 api_key = "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"
 
 
+class File(BaseModel):
+    filename: str
+    content_type: str
+    length: int
+    upload_date: datetime
 
 class Token(BaseModel):
     access_token: str
@@ -53,11 +64,13 @@ class User(BaseModel):
     username: Annotated[str, Form(...)]
     email: Annotated[str, Form(...)]
     verified: bool = False
+    files : List[File] = []
 
 
 
 class UserInDB(User):
     hashed_password: str
+
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -84,6 +97,22 @@ client = MongoClient('mongodb://localhost:27017/')
 db = client['users']
 users_collection = db['users']
 fs = GridFS(db)
+
+
+
+def get_file_details(file_id):
+    try:
+        file = fs.get(ObjectId(file_id))
+        return {
+        "file_id": str(file_id),  # Convert the ObjectId to a string
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "length": file.length,
+        "upload_date": file.upload_date
+        }
+    except:
+        traceback.print_exc()
+        return {"message": "File not found"}
 
 
 def send_verification_email(email, username):
@@ -175,26 +204,42 @@ async def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
 ) -> Token:
     user = authenticate_user(form_data.username, form_data.password)
+    print(user)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
+
     return Token(access_token=access_token, token_type="bearer")
+
 
 
 @app.get("/users/me/", response_model=User)
 async def read_users_me(
     current_user: Annotated[User, Depends(get_current_user)]
 ):
+
+    user = users_collection.find_one({"username": current_user.username})
+    file_ids = user.get("files", [])
+    files = [get_file_details(file_id) for file_id in file_ids]
+    current_user.files = files
     return current_user
 
-
+@app.get("/users/{username}/files",response_model=List[File])
+async def read_user_files(username: str):
+    user = users_collection.find_one({"$or": [{"email": username}, {"username": username}]})
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    file_ids = user.get("files", [])
+    files = [get_file_details(file_id) for file_id in file_ids]
+    return files
 
 
 
@@ -237,11 +282,18 @@ async def upload_file(
         User: Annotated[User, Depends(get_current_verified_user)]):
 
         user = users_collection.find_one({"username": User.username})
+
         if user:
             print(file.content_type)
             contents = await file.read()
             if file.content_type != "application/x-zip-compressed":
                 raise HTTPException(400, detail="Invalid document type, please upload a zip file.")
+
+            existing_file = fs.find_one({"filename": file.filename, "user_id": user["_id"]})
+            if existing_file:
+                # if existing file is found, delete it.
+                fs.delete(existing_file._id)
+                users_collection.update_one({"_id": user["_id"]}, {"$pull": {"files": existing_file._id}})
 
             file_id = fs.put(contents, filename=file.filename, content_type=file.content_type, user_id=user["_id"])
 
@@ -251,6 +303,25 @@ async def upload_file(
         else:
             raise HTTPException(status_code=404, detail="User not found")
 
+
+@app.delete("/fileDelete/{file_id}")
+async def delete_file(file_id: str, User: Annotated[User, Depends(get_current_verified_user)]):
+    user = users_collection.find_one({"username": User.username})
+    if user:
+        # Check if the file exists
+        existing_file = fs.find_one({"_id": ObjectId(file_id), "user_id": user["_id"]})
+        if not existing_file:
+            raise HTTPException(404, detail="File not found.")
+
+        # Delete the file from GridFS
+        fs.delete(ObjectId(file_id))
+
+        # Remove the file id from the user's files list
+        users_collection.update_one({"_id": user["_id"]}, {"$pull": {"files": ObjectId(file_id)}})
+
+        return {"message": "File deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="User not found")
 
 
 @app.get("/verify/{token}", response_class=HTMLResponse)
@@ -293,57 +364,6 @@ async def resend_verification(username: Annotated[str, Form()]):
 
 class PasswordReset(BaseModel):
     email: str
-"""
-
-class PasswordResetPayload(BaseModel):
-    password: str
-    token: str
-
-@app.post("/password-reset/request")
-async def request_password_reset(password_reset: PasswordReset, background_tasks: BackgroundTasks):
-    user = get_user(password_reset.email)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    password_reset_token = create_access_token(data={"sub": user.email}, expires_delta=timedelta(hours=1))
-
-    message = Mail(
-        from_email=('unk1911@edeliverables.com','eDeliverables Automation'),
-        to_emails=password_reset.email,
-        subject='Password Reset Request',
-        html_content=f'<p>To reset your password, click on the link below:</p><a href="http://localhost:8000/password-reset/{password_reset_token}">Reset Password</a>'
-    )
-
-    try:
-        sg = SendGridAPIClient(api_key)
-        response = sg.send(message)
-        print(response.status_code)
-        print(response.body)
-        print(response.headers)
-    except Exception as e:
-        print(e)
-
-    return {"message": "Password reset email sent"}
-
-
-@app.post("/password-reset/{token}")
-async def reset_password(token: str, password_reset_payload: PasswordResetPayload):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise HTTPException(status_code=400, detail="Invalid token")
-        user = get_user(email)
-        if user is None:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        hashed_password = get_password_hash(password_reset_payload.password)
-        users_collection.update_one({"email": email}, {"$set": {"hashed_password": hashed_password}})
-
-        return {"message": "Password reset successfully"}
-    except JWTError:
-        raise HTTPException(status_code=400, detail="Invalid token")
-        """
 
 
 def generate_verification_code(length=6):
@@ -392,3 +412,4 @@ async def reset_password(password: Annotated[str, Form(...)], code: Annotated[st
     users_collection.update_one({"email": user["email"]}, {"$set": {"hashed_password": hashed_password, "password_reset_code": None}})
 
     return {"message": "Password reset successfully"}
+
